@@ -1,0 +1,260 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --------------------------------------
+// Enums
+// --------------------------------------
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+  ADVANCED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  TRIALING
+}
+
+enum TransactionSource {
+  REALTIME_API
+  BATCH_CSV
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AlertStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// --------------------------------------
+// Identity & Access Management
+// --------------------------------------
+
+model User {
+  // ID comes from Clerk (e.g., "user_2q3X...")
+  id        String   @id
+  email     String   @unique
+  name      String?
+  role      UserRole @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  subscription  Subscription?
+  transactions  Transaction[]
+  anomalies     Anomaly[]
+  alerts        Alert[]
+  paymentLogs   PaymentLog[]
+  auditLogs     AuditLog[]
+  batchJobs     BatchJob[]
+
+  @@map("users")
+}
+
+// --------------------------------------
+// Billing & Entitlements (Razorpay)
+// --------------------------------------
+
+model Subscription {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Plan Details
+  plan      SubscriptionPlan   @default(FREE)
+  status    SubscriptionStatus @default(ACTIVE)
+  
+  // Razorpay Specifics
+  razorpayCustomerId      String?
+  razorpaySubscriptionId  String?  @unique
+  
+  // Period Tracking
+  currentPeriodStart DateTime  @default(now())
+  currentPeriodEnd   DateTime
+
+  // Entitlements Snapshot (JSON)
+  // Example: { "realtime": true, "alerting": true, "retention_days": 90, "api_rate_limit": 1000 }
+  features  Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("subscriptions")
+}
+
+model PaymentLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+
+  // Razorpay Transaction Details
+  razorpayPaymentId String   @unique
+  razorpayOrderId   String?
+  razorpaySignature String?
+  
+  amount    Decimal  @db.Decimal(10, 2)
+  currency  String   @default("INR")
+  status    String   // captured, failed, refunded
+  method    String?  // card, upi, netbanking
+
+  createdAt DateTime @default(now())
+
+  @@map("payment_logs")
+}
+
+// --------------------------------------
+// Core Data: Transactions
+// --------------------------------------
+
+model Transaction {
+  id        String   @id @default(uuid()) // Internal UUID
+  
+  // External Transaction ID (from the source system)
+  txId      String   
+  
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Financial Data
+  amount    Decimal  @db.Decimal(15, 2)
+  currency  String   @default("USD")
+  
+  // Metadata
+  timestamp DateTime // When the transaction actually happened
+  location  String?
+  merchant  String?
+  category  String?
+  
+  // Ingestion Metadata
+  source    TransactionSource
+  ingestedAt DateTime @default(now())
+
+  // Relations
+  anomalies Anomaly[]
+
+  // Indexes for faster lookups and time-series queries
+  @@index([userId, timestamp])
+  @@index([txId])
+  @@map("transactions")
+}
+
+model BatchJob {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  
+  filename    String
+  r2Key       String   // Cloudflare R2 Object Key
+  status      String   // PENDING, PROCESSING, COMPLETED, FAILED
+  totalRows   Int      @default(0)
+  processedRows Int    @default(0)
+  failedRows  Int      @default(0)
+  
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@map("batch_jobs")
+}
+
+// --------------------------------------
+// Detection Engine: Anomalies
+// --------------------------------------
+
+model Anomaly {
+  id            String   @id @default(uuid())
+  
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  // Detection Results
+  severity      Severity
+  score         Float    // ML Probability Score (0.0 - 1.0)
+  
+  // Analysis Details
+  ruleViolations String[] // Array of triggered rules e.g. ["VELOCITY_HIGH", "GEO_IMPOSSIBLE"]
+  explanation    String   @db.Text // Human-readable explanation
+  
+  // Full JSON dump of the analysis for debugging/retraining
+  rawAnalysis    Json?    
+
+  detectedAt    DateTime @default(now())
+  
+  // Feedback Loop
+  isFalsePositive Boolean @default(false)
+  feedbackNotes   String?
+
+  // Relations
+  alerts        Alert[]
+
+  @@index([userId, detectedAt])
+  @@index([severity])
+  @@map("anomalies")
+}
+
+// --------------------------------------
+// Action & Observability
+// --------------------------------------
+
+model Alert {
+  id        String      @id @default(uuid())
+  
+  userId    String
+  user      User        @relation(fields: [userId], references: [id])
+  
+  anomalyId String
+  anomaly   Anomaly     @relation(fields: [anomalyId], references: [id])
+
+  channel   String      // EMAIL, SMS, WEBHOOK
+  status    AlertStatus @default(PENDING)
+  
+  sentAt    DateTime?
+  error     String?     // Error message if failed
+
+  createdAt DateTime    @default(now())
+
+  @@map("alerts")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  
+  action    String   // LOGIN, API_KEY_CREATED, PLAN_UPDATED
+  details   Json?    // Contextual data
+  ipAddress String?
+  userAgent String?
+
+  timestamp DateTime @default(now())
+
+  @@map("audit_logs")
+}
