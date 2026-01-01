@@ -1,94 +1,98 @@
-# Identity & Entitlements Service (`auth-service`)
+# Identity & Access Management Service (`auth-service`)
 
-## Overview
-The **Identity & Entitlements Service** is the foundational layer for user identity, access control, and billing integration. It manages the lifecycle of users, their API keys for programmatic access, and their subscription status via Stripe. It serves as the "Source of Truth" for what a user is allowed to do within the platform.
+## 📖 Overview
+The **Auth Service** is the security backbone of Anomalyze. It has two distinct responsibilities:
+1.  **Identity Synchronization**: Syncing human user identities from **Clerk** to our local database via webhooks.
+2.  **Machine Access Control**: Managing the lifecycle of **API Keys** for programmatic access (Ingestion API).
 
-## Architecture
-- **Authentication**: Clerk (JWT Handling)
-- **Database**: Neon Postgres (`users`, `subscriptions`, `api_keys`)
-- **Billing**: Stripe (Checkout & Webhooks)
-- **Communication**: Publishes `user.created`, `user.updated` events to Kafka.
+It strictly separates **Identity** (Who you are - handled by Clerk) from **Access** (What you can do - handled by API Keys & Roles).
 
-## API Reference
+## 🏗 Architecture
+- **Identity Provider**: Clerk (Handles Login, Signup, MFA, Session Management).
+- **Database**: Postgres (`users`, `api_keys`, `audit_logs`).
+- **Security**:
+    - API Keys are stored as **bcrypt hashes**.
+    - Keys are never shown again after creation.
+    - Scoped permissions (`ingest:write`, `analytics:read`).
 
-### 1. User Management
+## 🔌 API Reference
 
-#### Get Current User Profile
-Retrieves the authenticated user's profile, active plan, and feature flags.
-- **Endpoint**: `GET /v1/users/me`
-- **Auth**: Bearer Token (JWT)
+### 1. Clerk Webhooks (Identity Sync)
+**Endpoint**: `POST /webhooks/clerk`
+- **Security**: Verifies `Svix` signature headers.
+- **Description**: Receives events from Clerk to keep local `users` table in sync.
+- **Handled Events**:
+    - `user.created`: Insert into `users` table.
+    - `user.updated`: Update email/name.
+    - `user.deleted`: Soft delete user & revoke all API keys.
 
-```json
-{
-  "id": "user_123",
-  "email": "alice@example.com",
-  "role": "ADMIN",
-  "subscription": {
-    "plan": "ADVANCED",
-    "status": "ACTIVE",
-    "expiry": "2026-01-01T00:00:00Z"
-  }
-}
-```
-
-#### Update User Profile
-Updates user preferences or metadata.
-- **Endpoint**: `PATCH /v1/users/me`
-- **Body**: `{ "name": "Alice Corp", "settings": { "theme": "dark" } }`
-
-### 2. API Key Management
-Manage long-lived API keys used for the Ingestion Service.
+### 2. API Key Management (Machine Access)
 
 #### Create API Key
-Generates a new API key for server-to-server integration.
-- **Endpoint**: `POST /v1/api-keys`
-- **Body**: `{ "name": "Production Ingestion Key", "scopes": ["ingest:write"] }`
+**Endpoint**: `POST /v1/api-keys`
+- **Auth**: Clerk JWT (User must be logged in).
+- **Body**:
+  ```json
+  {
+    "name": "Production Server 1",
+    "scopes": ["ingest:write", "alerts:read"],
+    "expires_in_days": 90
+  }
+  ```
 - **Response**:
   ```json
   {
-    "id": "key_xyz",
-    "secret": "sk_live_...", // Shown only once
-    "createdAt": "2025-01-01T12:00:00Z"
+    "key_id": "key_12345",
+    "secret": "sk_live_8374...", // ⚠️ SHOWN ONLY ONCE
+    "prefix": "sk_live_8374",
+    "scopes": ["ingest:write"]
   }
   ```
 
 #### List API Keys
-- **Endpoint**: `GET /v1/api-keys`
+**Endpoint**: `GET /v1/api-keys`
+- **Response**: Returns metadata (ID, name, prefix, created_at, last_used_at). **No secrets.**
+
+#### Rotate API Key
+**Endpoint**: `POST /v1/api-keys/:id/rotate`
+- **Description**: Invalidates the old key and generates a new secret for the same ID/Scopes.
+- **Use Case**: Key compromise or routine security rotation.
 
 #### Revoke API Key
-- **Endpoint**: `DELETE /v1/api-keys/:id`
+**Endpoint**: `DELETE /v1/api-keys/:id`
+- **Description**: Immediately blocks access for this key.
 
-### 3. Subscription & Billing
+### 3. Internal Validation (Middleware Support)
+**Endpoint**: `POST /internal/validate-key`
+- **Description**: Used by Ingestion Service to validate an incoming `x-api-key`.
+- **Body**: `{ "key": "sk_live_..." }`
+- **Response**:
+  ```json
+  {
+    "valid": true,
+    "user_id": "user_abc",
+    "scopes": ["ingest:write"],
+    "rate_limit_tier": "PRO"
+  }
+  ```
 
-#### List Available Plans
-Returns public pricing tiers and features.
-- **Endpoint**: `GET /v1/subscriptions/plans`
+## 🗄 Database Schema (Prisma Snippet)
+```prisma
+model ApiKey {
+  id          String   @id @default(uuid())
+  userId      String
+  name        String
+  keyPrefix   String   // First 7 chars for identification
+  keyHash     String   // Bcrypt hash of the full key
+  scopes      String[] // ["ingest:write", "read:all"]
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  isRevoked   Boolean  @default(false)
+}
+```
 
-#### Create Checkout Session
-Initiates a Stripe Checkout flow for upgrading/downgrading.
-- **Endpoint**: `POST /v1/subscriptions/checkout`
-- **Body**: `{ "planId": "price_pro_monthly" }`
-- **Response**: `{ "checkoutUrl": "https://checkout.stripe.com/..." }`
-
-#### Customer Portal
-Generates a link to the Stripe Customer Portal for billing management.
-- **Endpoint**: `POST /v1/subscriptions/portal`
-
-#### Stripe Webhook
-Handles asynchronous billing events.
-- **Endpoint**: `POST /webhooks/stripe`
-- **Events Handled**: `checkout.session.completed`, `customer.subscription.updated`, `invoice.payment_failed`.
-
-### 4. Admin (Internal)
-
-#### Get User Entitlements (Internal)
-Used by other services (like Ingestion) to check limits.
-- **Endpoint**: `GET /internal/entitlements/:userId`
-- **Auth**: Service-to-Service Token
-
-## Error Codes
-| Code | Description |
-|------|-------------|
-| `AUTH_001` | Invalid or expired JWT |
-| `SUB_001` | Active subscription required |
-| `KEY_001` | API Key limit reached |
+## 🛡 Security Best Practices
+1.  **Hashing**: We store `bcrypt(api_key)`, never the plain text.
+2.  **Prefixing**: Keys look like `sk_live_...` to make them detectable by secret scanners.
+3.  **Least Privilege**: Scopes restrict what a key can do.

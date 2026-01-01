@@ -20,8 +20,8 @@ enum UserRole {
 
 enum SubscriptionPlan {
   FREE
+  BASIC
   PRO
-  ADVANCED
 }
 
 enum SubscriptionStatus {
@@ -29,6 +29,7 @@ enum SubscriptionStatus {
   PAST_DUE
   CANCELED
   UNPAID
+  HALTED    // Razorpay specific: Subscription is paused/halted
   TRIALING
 }
 
@@ -44,14 +45,34 @@ enum Severity {
   CRITICAL
 }
 
-enum AlertStatus {
+enum NotificationChannelType {
+  EMAIL
+  VOICE
+  SMS
+  WEBHOOK
+}
+
+enum NotificationStatus {
   PENDING
   SENT
+  FAILED
+  SKIPPED // e.g. User preference disabled this channel
+}
+
+enum InvoiceStatus {
+  PENDING
+  GENERATED
+  FAILED
+}
+
+enum ReportStatus {
+  PROCESSING
+  COMPLETED
   FAILED
 }
 
 // --------------------------------------
-// Identity & Access Management
+// Identity & Access Management (Auth Service)
 // --------------------------------------
 
 model User {
@@ -64,19 +85,47 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  subscription  Subscription?
-  transactions  Transaction[]
-  anomalies     Anomaly[]
-  alerts        Alert[]
-  paymentLogs   PaymentLog[]
-  auditLogs     AuditLog[]
-  batchJobs     BatchJob[]
+  subscription         Subscription?
+  apiKeys              ApiKey[]
+  notificationSettings NotificationSettings?
+  
+  // Data Relations
+  transactions    Transaction[]
+  anomalies       Anomaly[]
+  batchJobs       BatchJob[]
+  
+  // Logs & History
+  notificationLogs NotificationLog[]
+  paymentLogs      PaymentLog[]
+  auditLogs        AuditLog[]
+  invoices         Invoice[]
+  reports          Report[]
 
   @@map("users")
 }
 
+model ApiKey {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String   // e.g. "Production Server 1"
+  keyPrefix   String   // First 7 chars (e.g. "sk_live")
+  keyHash     String   // Bcrypt hash of the full key
+  scopes      String[] // ["ingest:write", "alerts:read"]
+  
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  isRevoked   Boolean  @default(false)
+  
+  createdAt   DateTime @default(now())
+
+  @@index([keyPrefix])
+  @@map("api_keys")
+}
+
 // --------------------------------------
-// Billing & Entitlements (Razorpay)
+// Billing & Entitlements (Subscription Service)
 // --------------------------------------
 
 model Subscription {
@@ -102,8 +151,32 @@ model Subscription {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  
+  invoices  Invoice[]
 
   @@map("subscriptions")
+}
+
+model Invoice {
+  id              String        @id @default(uuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id])
+  subscriptionId  String
+  subscription    Subscription  @relation(fields: [subscriptionId], references: [id])
+
+  amount          Decimal       @db.Decimal(10, 2)
+  currency        String        @default("INR")
+  status          InvoiceStatus @default(PENDING)
+  
+  // S3/R2 URL for the generated PDF
+  pdfUrl          String?
+  
+  billingPeriodStart DateTime
+  billingPeriodEnd   DateTime
+  
+  createdAt       DateTime      @default(now())
+
+  @@map("invoices")
 }
 
 model PaymentLog {
@@ -127,7 +200,45 @@ model PaymentLog {
 }
 
 // --------------------------------------
-// Core Data: Transactions
+// Notifications (Notification Service)
+// --------------------------------------
+
+model NotificationSettings {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  emailEnabled       Boolean  @default(true)
+  
+  // Pro Feature: Voice Calls
+  phoneEnabled       Boolean  @default(false)
+  phoneNumber        String?
+  minSeverityForCall Severity @default(CRITICAL) // Only call for CRITICAL by default
+
+  updatedAt DateTime @updatedAt
+
+  @@map("notification_settings")
+}
+
+model NotificationLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+
+  channel   NotificationChannelType
+  status    NotificationStatus
+  
+  // Context
+  anomalyId String?  // Optional link to anomaly
+  metadata  Json?    // { "error": "Twilio busy", "retry_count": 2 }
+
+  sentAt    DateTime @default(now())
+
+  @@map("notification_logs")
+}
+
+// --------------------------------------
+// Core Data: Transactions (Ingestion Service)
 // --------------------------------------
 
 model Transaction {
@@ -182,7 +293,7 @@ model BatchJob {
 }
 
 // --------------------------------------
-// Detection Engine: Anomalies
+// Detection Engine (ML Service)
 // --------------------------------------
 
 model Anomaly {
@@ -207,40 +318,50 @@ model Anomaly {
 
   detectedAt    DateTime @default(now())
   
-  // Feedback Loop
+  // Feedback Loop (Active Learning)
   isFalsePositive Boolean @default(false)
   feedbackNotes   String?
-
-  // Relations
-  alerts        Alert[]
+  feedbackAt      DateTime?
 
   @@index([userId, detectedAt])
   @@index([severity])
   @@map("anomalies")
 }
 
+model ModelArtifact {
+  id          String   @id @default(uuid())
+  version     String   @unique // e.g. "v1.2.0"
+  
+  s3Path      String   // Path to .pkl or .onnx in Data Lake
+  type        String   // "isolation_forest", "autoencoder"
+  
+  accuracy    Float?
+  isActive    Boolean  @default(false)
+  
+  trainedAt   DateTime @default(now())
+  
+  @@map("model_artifacts")
+}
+
 // --------------------------------------
-// Action & Observability
+// Analytics & Reporting (Analytics Service)
 // --------------------------------------
 
-model Alert {
-  id        String      @id @default(uuid())
-  
+model Report {
+  id        String       @id @default(uuid())
   userId    String
-  user      User        @relation(fields: [userId], references: [id])
+  user      User         @relation(fields: [userId], references: [id])
   
-  anomalyId String
-  anomaly   Anomaly     @relation(fields: [anomalyId], references: [id])
-
-  channel   String      // EMAIL, SMS, WEBHOOK
-  status    AlertStatus @default(PENDING)
+  type      String       // "WEEKLY_SUMMARY", "ANOMALY_EXPORT"
+  format    String       // "PDF", "CSV"
+  status    ReportStatus @default(PROCESSING)
   
-  sentAt    DateTime?
-  error     String?     // Error message if failed
+  fileUrl   String?      // S3/R2 URL
+  
+  createdAt DateTime     @default(now())
+  completedAt DateTime?
 
-  createdAt DateTime    @default(now())
-
-  @@map("alerts")
+  @@map("reports")
 }
 
 model AuditLog {

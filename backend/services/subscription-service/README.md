@@ -1,101 +1,91 @@
 # Subscription & Billing Service (`subscription-service`)
 
-## Overview
-The **Subscription Service** encapsulates all billing logic, plan management, and entitlement enforcement. It synchronizes state with Stripe and provides a high-speed internal API for other services to check what features a user can access.
+## 📖 Overview
+The **Subscription Service** handles the entire billing lifecycle using **Razorpay Subscriptions**. It manages plans, recurring payments, and generates compliant PDF invoices asynchronously. It serves as the "Source of Truth" for user entitlements (Basic vs. Pro).
 
-## Architecture
-- **Payment Processor**: Stripe
-- **Database**: Postgres (`subscriptions`, `invoices`, `usage_records`)
-- **Cache**: Redis (Entitlements caching for <5ms lookups)
+## 🏗 Architecture
+- **Payment Gateway**: Razorpay (Subscription API).
+- **Invoice Storage**: AWS S3 / Cloudflare R2.
+- **Queue**: Kafka (`billing-events` topic) for async invoice generation.
+- **Database**: Postgres (`subscriptions`, `invoices`, `plans`).
 
-## API Reference
+## 🔄 Subscription Lifecycle
+1.  **Created**: User selects a plan -> Razorpay Subscription ID generated.
+2.  **Authenticated**: User completes payment on Razorpay Checkout.
+3.  **Active**: Webhook `subscription.charged` received -> DB updated to `ACTIVE`.
+4.  **Halted**: Payment fails -> Retry logic -> Status `PAST_DUE` -> `HALTED`.
+5.  **Cancelled**: User cancels -> Access remains until `current_period_end`.
 
-### 1. Public Plans
+## 🔌 API Reference
 
-#### Get Pricing Tiers
-Returns available subscription plans and their feature sets.
-- **Endpoint**: `GET /v1/plans`
+### 1. Plan Management
+#### List Plans
+**Endpoint**: `GET /v1/plans`
 - **Response**:
   ```json
   [
-    {
-      "id": "price_free",
-      "name": "Hobby",
-      "price": 0,
-      "features": { "retention": 7, "requests_per_min": 60 }
-    },
-    {
-      "id": "price_pro",
-      "name": "Pro",
-      "price": 4900, // $49.00
-      "features": { "retention": 90, "requests_per_min": 1000 }
-    }
+    { "id": "plan_basic", "name": "Basic", "price": 999, "currency": "INR", "interval": "monthly" },
+    { "id": "plan_pro", "name": "Pro", "price": 4999, "currency": "INR", "interval": "monthly" }
   ]
   ```
 
-### 2. Subscription Management
-
-#### Create Checkout Session
-Generates a Stripe Checkout URL for upgrading/downgrading.
-- **Endpoint**: `POST /v1/checkout`
-- **Body**: `{ "price_id": "price_pro", "success_url": "...", "cancel_url": "..." }`
-
-#### Get Current Subscription
-- **Endpoint**: `GET /v1/subscription/me`
+### 2. Subscription Flow
+#### Create Subscription
+**Endpoint**: `POST /v1/subscriptions`
+- **Body**: `{ "plan_id": "plan_pro" }`
+- **Response**:
+  ```json
+  {
+    "subscription_id": "sub_123456",
+    "short_url": "https://rzp.io/i/..." // Razorpay Checkout URL
+  }
+  ```
 
 #### Cancel Subscription
-- **Endpoint**: `POST /v1/subscription/cancel`
-- **Body**: `{ "reason": "Too expensive" }`
+**Endpoint**: `POST /v1/subscriptions/cancel`
+- **Description**: Cancels auto-renewal. Access continues until cycle end.
 
-#### Billing Portal
-Get a link to the Stripe self-serve portal (update card, download invoices).
-- **Endpoint**: `POST /v1/portal`
+#### Get Current Status
+**Endpoint**: `GET /v1/subscriptions/me`
+- **Response**: `{ "status": "ACTIVE", "plan": "PRO", "renews_at": "2026-02-01" }`
 
-### 3. Entitlements (Internal High-Performance)
+### 3. Invoicing (Async Pipeline)
+#### List Invoices
+**Endpoint**: `GET /v1/invoices`
 
-#### Check Entitlement
-Used by Ingestion/ML services to verify limits.
-- **Endpoint**: `GET /internal/entitlements/:userId`
+#### Download Invoice
+**Endpoint**: `GET /v1/invoices/:id/download`
+- **Response**: Redirects to S3/R2 signed URL for the PDF.
+
+### 4. Webhooks (Razorpay)
+**Endpoint**: `POST /webhooks/razorpay`
+- **Security**: Validates `X-Razorpay-Signature`.
+- **Events**:
+    - `subscription.charged`: Extend validity, trigger `invoice-generation` Kafka event.
+    - `subscription.halted`: Downgrade user to Free tier.
+    - `payment.failed`: Notify user via Notification Service.
+
+### 5. Internal Entitlements
+**Endpoint**: `GET /internal/entitlements/:user_id`
+- **Used By**: Ingestion Service, ML Service.
 - **Response**:
   ```json
   {
     "plan": "PRO",
-    "status": "ACTIVE",
-    "limits": {
-      "daily_ingestion": 100000,
-      "alert_channels": 5
-    },
-    "features": ["ml_inference", "export_pdf"]
+    "features": {
+      "live_ingestion": true,
+      "phone_alerts": true,
+      "retention_days": 90
+    }
   }
   ```
 
-#### Report Usage
-Report metered usage (e.g., number of transactions processed) to Stripe.
-- **Endpoint**: `POST /internal/usage`
-- **Body**: `{ "user_id": "user_123", "metric": "transactions_processed", "quantity": 50 }`
-
-### 4. Webhooks
-
-#### Stripe Webhook Handler
-The single entry point for Stripe events.
-- **Endpoint**: `POST /webhooks/stripe`
-- **Security**: Verifies `Stripe-Signature` header.
-- **Handled Events**:
-  - `checkout.session.completed`: Provision new subscription.
-  - `invoice.payment_succeeded`: Renew access.
-  - `invoice.payment_failed`: Enter grace period / downgrade.
-  - `customer.subscription.deleted`: Revoke access.
-
-## Data Model
-**Table**: `subscriptions`
-| Column | Type | Description |
-|--------|------|-------------|
-| `user_id` | VARCHAR | Foreign Key to Auth Service |
-| `stripe_customer_id` | VARCHAR | Stripe Customer ID |
-| `stripe_sub_id` | VARCHAR | Stripe Subscription ID |
-| `status` | ENUM | active, trialing, past_due, canceled |
-| `current_period_end` | TIMESTAMP | Expiry date |
-
-## Dependencies
-- `stripe-node`: Official Stripe SDK.
-- `redis`: For caching entitlement responses.
+## 📄 Invoice Generation Workflow
+1.  **Trigger**: `subscription.charged` webhook received.
+2.  **Publish**: Event `{ "user_id": "...", "amount": 4999, "date": "..." }` pushed to Kafka `invoices` topic.
+3.  **Worker**:
+    - Consumes event.
+    - Generates HTML from template.
+    - Converts HTML -> PDF (Puppeteer/Playwright).
+    - Uploads to S3/R2.
+    - Inserts record into `invoices` table.

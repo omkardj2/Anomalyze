@@ -1,103 +1,62 @@
 # Unified Ingestion Service (`ingestion-service`)
 
-## Overview
-The **Unified Ingestion Service** is the high-performance gateway for data entry. It is designed to handle bursty traffic patterns and provides robust validation before data ever reaches the processing pipeline. It supports both single-event real-time ingestion and bulk CSV processing.
+## 📖 Overview
+The **Ingestion Service** is the high-throughput gateway for all data. It enforces the **Tiered Ingestion Model**:
+- **Basic Plan**: Only CSV Uploads allowed.
+- **Pro Plan**: CSV Uploads + **Real-time API** streaming.
 
-## Architecture
-- **Input**: REST API (JSON & Multipart)
-- **Buffer**: Kafka (`transactions` topic)
-- **Storage**: Cloudflare R2 (Batch files)
-- **Validation**: Zod Schemas + Entitlement Checks (Redis)
+It uses **Kafka** to buffer data, ensuring the API never blocks, even during traffic spikes.
 
-## API Reference
+## 🏗 Architecture
+- **Buffer**: Kafka (`transactions` topic).
+- **Storage**: Cloudflare R2 (for raw CSV retention).
+- **Validation**: Zod Schemas.
+- **Rate Limiting**: Redis-based sliding window.
 
-### 1. Real-Time Ingestion
+## 🔌 API Reference
 
-#### Ingest Single Transaction
-The primary endpoint for real-time integration.
-- **Endpoint**: `POST /v1/transactions`
-- **Auth**: Bearer Token OR `x-api-key` header
-- **Rate Limit**: Enforced per plan tier.
-
-**Request Body**:
-```json
-{
-  "tx_id": "tx_555",
-  "amount": 4500.50,
-  "currency": "USD",
-  "timestamp": "2025-12-20T12:00:00Z",
-  "merchant_id": "merch_123",
-  "location": {
-    "lat": 40.7128,
-    "lon": -74.0060,
-    "city": "New York"
-  },
-  "metadata": {
-    "device_id": "dev_999"
+### 1. Real-Time Ingestion (Pro Only)
+**Endpoint**: `POST /v1/ingest/live`
+- **Headers**: `x-api-key: sk_live_...`
+- **Body**:
+  ```json
+  {
+    "tx_id": "tx_999",
+    "amount": 5000,
+    "currency": "INR",
+    "timestamp": "2026-01-01T12:00:00Z",
+    "merchant": "Amazon"
   }
-}
-```
+  ```
+- **Logic**:
+    1.  **Validate API Key**: Call Auth Service (or check cache).
+    2.  **Check Entitlement**: Is Plan == PRO? If not, return `403 Forbidden`.
+    3.  **Push to Kafka**: Produce to `transactions` topic.
+    4.  **Respond**: `202 Accepted`.
 
-**Response**:
-- `202 Accepted`: `{ "status": "queued", "trace_id": "abc-123" }`
-- `400 Bad Request`: Validation error (e.g., missing fields).
-- `429 Too Many Requests`: Rate limit exceeded.
+### 2. Batch Ingestion (All Plans)
+**Endpoint**: `POST /v1/ingest/upload`
+- **Content-Type**: `multipart/form-data` (CSV file).
+- **Logic**:
+    1.  **Stream to R2**: Upload file to `s3://raw-uploads/{user_id}/{file_id}.csv`.
+    2.  **Queue Job**: Push job metadata to Kafka `batch-jobs` topic.
+    3.  **Async Worker**:
+        - Reads file from R2.
+        - Validates row-by-row.
+        - Produces valid rows to `transactions` Kafka topic.
+        - Updates job status in DB.
 
-### 2. Batch Processing
+### 3. Job Status
+**Endpoint**: `GET /v1/ingest/jobs/:id`
+- **Response**: `{ "status": "COMPLETED", "rows_processed": 10000, "errors": 0 }`
 
-#### Upload Batch File
-Upload a CSV file for asynchronous processing.
-- **Endpoint**: `POST /v1/batches`
-- **Content-Type**: `multipart/form-data`
-- **File Requirements**: CSV format, max 50MB.
+## 🚦 Rate Limiting
+- **Basic**: 10 requests/min (API is blocked anyway, but for safety).
+- **Pro**: 10,000 requests/min.
+- **Implementation**: Redis `INCR` with expiry.
 
-**Response**:
-```json
-{
-  "job_id": "job_888",
-  "status": "UPLOADED",
-  "estimated_rows": 5000
-}
-```
-
-#### Get Batch Job Status
-Poll for the progress of a batch ingestion job.
-- **Endpoint**: `GET /v1/batches/:jobId`
-
-**Response**:
-```json
-{
-  "id": "job_888",
-  "status": "PROCESSING",
-  "progress": {
-    "total": 5000,
-    "processed": 2500,
-    "failed": 5
-  },
-  "errors_url": "https://r2.cloudflarestorage.com/.../errors.csv"
-}
-```
-
-#### List Batch Jobs
-History of uploads.
-- **Endpoint**: `GET /v1/batches`
-- **Query**: `?status=FAILED&limit=10`
-
-### 3. System & Health
-
-#### Health Check
-Used by Kubernetes/Load Balancer.
-- **Endpoint**: `GET /health`
-- **Response**: `{ "status": "ok", "kafka": "connected", "redis": "connected" }`
-
-#### Metrics
-Prometheus metrics for monitoring.
-- **Endpoint**: `GET /metrics`
-- **Metrics**: `ingestion_requests_total`, `ingestion_latency_seconds`, `batch_jobs_active`.
-
-## Validation Rules
-The service enforces the following constraints:
-1. `amount`: Must be positive.
-2. `currency`: Must be a valid ISO 4217 code.
-3. `timestamp`: Cannot be in the future.
-4. `tx_id`: Must be unique per user (deduplication window: 24h).
+## 🔄 Data Flow
+`Client` -> `Ingestion API` -> `Kafka (transactions)` -> `ML Service`
+                                     |
+                                     v
+                               `Data Lake Archiver` (Saves to S3 for Training)

@@ -1,99 +1,74 @@
 # Notification Service (`notification-service`)
 
-## Overview
-The **Notification Service** is a centralized delivery engine responsible for dispatching critical alerts and system messages to users across multiple channels (Email, Slack, Webhooks, SMS). It abstracts provider complexity and handles retries, rate limiting, and template rendering.
+## 📖 Overview
+The **Notification Service** is a multi-channel alert dispatcher. It handles critical anomaly alerts with a tiered escalation policy.
+- **Basic Users**: Email only (Nodemailer).
+- **Pro Users**: Email + **Voice Call** (Twilio) with Text-to-Speech (TTS).
 
-## Architecture
-- **Input**: Kafka Topic `alerts` (Async) & REST API (Sync)
-- **Providers**: 
-  - **Email**: SendGrid / AWS SES
-  - **SMS**: Twilio
-  - **Chat**: Slack Webhooks / Discord
-- **Storage**: Postgres (`notification_logs`, `channels`)
+## 🏗 Architecture
+- **Email**: Nodemailer (SMTP / SES / SendGrid).
+- **Voice**: Twilio Programmable Voice API.
+- **Input**: Kafka Topic `alerts`.
+- **Logic**: Severity-based routing & User Plan checks.
 
-## API Reference
+## 🔌 API Reference
 
-### 1. Channel Management
-
-#### Register Notification Channel
-Users can configure where they want to receive alerts.
-- **Endpoint**: `POST /v1/channels`
-- **Auth**: Bearer Token
+### 1. Configuration
+#### Update Notification Settings
+**Endpoint**: `PATCH /v1/settings`
 - **Body**:
   ```json
   {
-    "type": "SLACK",
-    "name": "DevOps Channel",
-    "config": {
-      "webhook_url": "https://hooks.slack.com/services/..."
-    },
-    "events": ["ANOMALY_CRITICAL", "BILLING_FAILED"]
+    "email_enabled": true,
+    "phone_enabled": true, // Only allowed if Plan = PRO
+    "phone_number": "+919876543210",
+    "min_severity_for_call": "CRITICAL" // HIGH or CRITICAL
   }
   ```
 
-#### List Channels
-- **Endpoint**: `GET /v1/channels`
+### 2. Testing
+#### Test Channel
+**Endpoint**: `POST /v1/test`
+- **Body**: `{ "channel": "VOICE" }`
+- **Description**: Triggers a dummy call to verify Twilio integration.
 
-#### Delete Channel
-- **Endpoint**: `DELETE /v1/channels/:id`
+## 📞 Voice Call Logic (Twilio)
+**Workflow for Pro Users:**
+1.  **Anomaly Detected**: Kafka message received `{ "severity": "CRITICAL", "amount": 50000 }`.
+2.  **Check Preferences**: Is `phone_enabled`? Is severity >= `min_severity`?
+3.  **Initiate Call**: Call user via Twilio.
+4.  **TwiML Execution (TTS)**:
+    ```xml
+    <Response>
+      <Say voice="alice">
+        This is an alert from Anomalyze. 
+        We detected a critical anomaly of 50,000 Rupees. 
+        Please check your dashboard immediately.
+      </Say>
+    </Response>
+    ```
+5.  **Fallback**: If call status is `busy` or `no-answer`, log it and send an SMS/Email backup.
 
-### 2. Dispatch API (Internal)
+## 📧 Email Logic (Nodemailer)
+- **Templates**: Handlebars (`.hbs`) templates for consistent branding.
+- **Transport**: Configurable SMTP (Gmail for dev, SES/SendGrid for prod).
+- **Rate Limiting**: Max 10 emails/hour per user to prevent spamming during anomaly storms.
 
-#### Send Notification
-Used by other services (e.g., Auth Service for "Welcome Email") to trigger notifications programmatically.
-- **Endpoint**: `POST /v1/dispatch`
-- **Auth**: Service Token
-- **Body**:
-  ```json
-  {
-    "user_id": "user_123",
-    "template_id": "welcome_email_v1",
-    "data": { "name": "Alice" },
-    "channels": ["EMAIL"]
-  }
-  ```
-
-### 3. History & Audit
-
-#### Get Notification Logs
-View the delivery status of past notifications.
-- **Endpoint**: `GET /v1/history`
-- **Query**: `?status=FAILED&limit=20`
-
-**Response**:
+## 📨 Event Consumer
+**Topic**: `alerts`
+**Payload**:
 ```json
-[
-  {
-    "id": "notif_999",
-    "event": "ANOMALY_DETECTED",
-    "channel": "EMAIL",
-    "status": "DELIVERED",
-    "sent_at": "2025-12-20T12:05:00Z"
+{
+  "user_id": "user_123",
+  "anomaly_id": "anom_999",
+  "severity": "CRITICAL",
+  "details": {
+    "amount": 50000,
+    "merchant": "Unknown"
   }
-]
+}
 ```
-
-### 4. Template Management (Admin)
-
-#### Create/Update Template
-Manage HTML/Text templates for emails.
-- **Endpoint**: `PUT /v1/templates/:id`
-- **Body**:
-  ```json
-  {
-    "subject": "Alert: {{severity}} Anomaly Detected",
-    "body_html": "<h1>Anomaly Detected</h1><p>Transaction ID: {{tx_id}}</p>"
-  }
-  ```
-
-## Event Consumption
-The service listens to the `alerts` Kafka topic.
-1. **Consume**: Read message `{ "anomaly_id": "...", "user_id": "..." }`.
-2. **Resolve**: Fetch user's configured channels from DB.
-3. **Render**: Hydrate template with anomaly details.
-4. **Send**: Dispatch to SendGrid/Slack.
-5. **Log**: Record outcome in `notification_logs`.
-
-## Error Handling
-- **Retries**: Exponential backoff for 5xx provider errors (up to 3 times).
-- **Dead Letter Queue**: Failed messages are pushed to `alerts-dlq` for manual inspection.
+**Processing**:
+1.  Fetch user profile & plan (Cached).
+2.  If `Plan == PRO` && `Severity == CRITICAL` -> **Trigger Call**.
+3.  Always **Trigger Email**.

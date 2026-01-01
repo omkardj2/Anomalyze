@@ -1,102 +1,62 @@
-# ML & Detection Engine (`ml-service`)
+# ML Service (`ml-service`)
 
-## Overview
-The **ML & Detection Engine** is a specialized worker service. While primarily an event consumer, it exposes a Management API for operational control, model versioning, and debugging. It combines deterministic rules (velocity, geo) with probabilistic ML models (Isolation Forest).
+## 📖 Overview
+The **ML Service** is a Python-based microservice responsible for detecting anomalies in financial transactions. It operates in two modes:
+1.  **Inference (Real-time)**: Consumes Kafka stream, applies Isolation Forest model, produces verdicts.
+2.  **Training (Batch)**: Pulls historical data from the Data Lake (S3/R2), retrains models, and versions artifacts.
 
-## Architecture
-- **Consumer**: Kafka Group `ml-detection-group`
-- **ML Runtime**: ONNX Runtime
-- **State**: Redis (Sliding Windows)
+## 🏗 Architecture
+- **Language**: Python 3.11+
+- **Libraries**: `scikit-learn`, `pandas`, `fastapi`, `confluent-kafka`.
+- **Data Lake**: S3/R2 (Parquet files) - **NOT** Postgres.
+- **Model Store**: S3/R2 (Versioned `.pkl` or `.onnx` files).
 
-## API Reference (Management Port)
+## 🔌 API Reference (Management)
 
-### 1. Model Management
-
-#### Get Model Info
-Returns details about the currently loaded ML model.
-- **Endpoint**: `GET /v1/model/info`
-
-**Response**:
-```json
-{
-  "version": "v2.4.0",
-  "type": "isolation_forest",
-  "loaded_at": "2025-12-20T10:00:00Z",
-  "input_features": ["amount", "hour_of_day", "category_encoding"],
-  "threshold": 0.75
-}
-```
-
-#### Force Reload Model
-Triggers a hot-reload of the model from Cloudflare R2 without restarting the service.
-- **Endpoint**: `POST /v1/model/reload`
-- **Auth**: Admin API Key
-
-### 2. Rule Management
-
-#### List Active Rules
-View the deterministic rules currently applied to the stream.
-- **Endpoint**: `GET /v1/rules`
-
-**Response**:
-```json
-[
+### 1. Training Pipeline
+#### Trigger Retraining
+**Endpoint**: `POST /v1/train`
+- **Auth**: Admin Key.
+- **Body**:
+  ```json
   {
-    "id": "VELOCITY_HIGH",
-    "description": "> 5 transactions in 1 minute",
-    "enabled": true,
-    "severity": "HIGH"
-  },
-  {
-    "id": "GEO_IMPOSSIBLE",
-    "description": "Speed > 800km/h between transactions",
-    "enabled": true,
-    "severity": "CRITICAL"
+    "user_id": "user_123", // Optional: Train specific user model
+    "date_range": { "start": "2025-01-01", "end": "2025-12-31" }
   }
-]
-```
+  ```
+- **Process**:
+    1.  Fetch Parquet datasets from S3 Data Lake.
+    2.  Preprocess (One-hot encoding, scaling).
+    3.  Train `IsolationForest`.
+    4.  Evaluate against holdout set.
+    5.  Serialize & Upload to S3 (`models/v2.pkl`).
+    6.  Update `current_model_version` in DB/Redis.
 
-#### Update Rule Configuration
-Dynamically adjust thresholds.
-- **Endpoint**: `PATCH /v1/rules/:ruleId`
-- **Body**: `{ "threshold": 10, "window_seconds": 120 }`
+#### Get Training Status
+**Endpoint**: `GET /v1/train/:job_id`
 
-### 3. Debugging & Testing
+### 2. Model Management
+#### List Models
+**Endpoint**: `GET /v1/models`
+- **Response**: `[{ "version": "v1.2", "accuracy": 0.95, "active": true }]`
 
-#### Dry-Run Prediction
-Send a transaction payload to get a detection result *without* persisting it or triggering alerts. Useful for testing model behavior.
-- **Endpoint**: `POST /v1/predict/dry-run`
+#### Promote Model
+**Endpoint**: `POST /v1/models/:version/promote`
+- **Description**: Hot-swaps the active model used by the inference consumer.
 
-**Request**:
-```json
-{
-  "amount": 99999,
-  "currency": "USD",
-  "history": [...] // Optional simulated history
-}
-```
+## 🧠 Inference Pipeline (Kafka Consumer)
+**Topic**: `transactions`
+**Logic**:
+1.  **Deserialize**: Read JSON transaction.
+2.  **Feature Engineering**:
+    - Calculate rolling window stats (Velocity, Avg Amount) using Redis.
+    - *Note*: State is kept in Redis, not local memory, for stateless scaling.
+3.  **Predict**: `model.predict(features)`.
+4.  **Verdict**:
+    - If `score < threshold`: **ANOMALY**.
+5.  **Publish**: Send to `anomalies` topic.
 
-**Response**:
-```json
-{
-  "is_anomaly": true,
-  "score": 0.99,
-  "triggered_rules": ["AMOUNT_SPIKE"],
-  "explanation": "Amount is 500% above baseline."
-}
-```
-
-### 4. Health
-
-#### Service Health
-- **Endpoint**: `GET /health`
-- **Checks**: Kafka connectivity, Redis latency, ONNX runtime status.
-
-## Event Processing Logic
-1. **Deserialization**: Parse Kafka message.
-2. **State Hydration**: Fetch user's last 10 transactions from Redis.
-3. **Rule Execution**: Run Python/Pandas logic.
-4. **Feature Engineering**: Transform raw data for ONNX.
-5. **Inference**: Run `session.run()`.
-6. **Aggregation**: Combine Rule + ML results.
-7. **Publish**: Send to `anomalies` topic if severity > LOW.
+## 💾 Data Lake Strategy
+- **Raw Data**: Ingestion service dumps raw CSVs/JSONs to `s3://anomalyze-datalake/raw/`.
+- **Processed Data**: ETL jobs convert raw data to partitioned Parquet `s3://anomalyze-datalake/processed/yyyy/mm/dd/`.
+- **Why?**: Postgres locks up during heavy training reads. S3 + Parquet is faster, cheaper, and scalable for ML workloads.

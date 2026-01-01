@@ -1,101 +1,58 @@
 # Analytics & Reporting Service (`analytics-service`)
 
-## Overview
-The **Analytics & Reporting Service** is the user-facing backend for the Anomalyze Dashboard. It provides rich querying capabilities over the anomaly dataset, generates statistical aggregations, and manages the feedback loop that improves model accuracy over time.
+## 📖 Overview
+The **Analytics Service** powers the frontend dashboard. It aggregates data from the `anomalies` database and provides actionable insights. It is optimized for **Read Heavy** workloads.
 
-## Architecture
-- **Database**: Neon Postgres (Read-heavy)
-- **Cache**: Redis (Dashboard counters)
-- **Alerting**: SendGrid / Webhook Dispatcher
+## 🏗 Architecture
+- **Database**: Postgres (Read Replica preferred).
+- **Cache**: Redis (for pre-computed dashboard stats).
+- **Export Engine**: Generates CSV/PDF reports on the fly.
 
-## API Reference
+## 🔌 API Reference
 
-### 1. Anomaly Explorer
+### 1. Dashboard Widgets
+#### Summary Stats
+**Endpoint**: `GET /v1/stats/summary`
+- **Query**: `?range=24h`
+- **Response**:
+  ```json
+  {
+    "total_transactions": 50000,
+    "anomalies_detected": 12,
+    "money_saved": 450000,
+    "risk_score": "LOW"
+  }
+  ```
 
-#### List Anomalies (Search)
-Advanced filtering for the dashboard grid.
-- **Endpoint**: `GET /v1/anomalies`
-- **Query Params**:
-  - `page`, `limit`
-  - `severity`: `HIGH,CRITICAL`
-  - `start_date`, `end_date`
-  - `status`: `NEW`, `REVIEWED`, `RESOLVED`
-  - `search`: "tx_555"
+#### Time Series (Charts)
+**Endpoint**: `GET /v1/stats/timeline`
+- **Response**: Data points for "Transactions vs Anomalies" line chart.
+
+#### Category Breakdown (Pie Chart)
+**Endpoint**: `GET /v1/stats/categories`
+- **Response**: `{ "Electronics": 40, "Travel": 30, "Food": 30 }`
+
+### 2. Anomaly Management
+#### List Anomalies
+**Endpoint**: `GET /v1/anomalies`
+- **Filters**: `severity`, `status` (OPEN, RESOLVED), `date_range`.
+- **Pagination**: Cursor-based pagination for performance.
 
 #### Get Anomaly Details
-- **Endpoint**: `GET /v1/anomalies/:id`
+**Endpoint**: `GET /v1/anomalies/:id`
+- **Includes**: Full explanation, rule triggered, and raw transaction data.
 
-#### Update Anomaly Status
-Workflow management for analysts.
-- **Endpoint**: `PATCH /v1/anomalies/:id`
-- **Body**: `{ "status": "RESOLVED", "notes": "Customer confirmed valid." }`
+#### Resolve Anomaly
+**Endpoint**: `PATCH /v1/anomalies/:id`
+- **Body**: `{ "status": "RESOLVED", "feedback": "FALSE_POSITIVE" }`
+- **Note**: Feedback is pushed to a queue for the ML Service to improve future training.
 
-### 2. Feedback Loop (Model Training)
+### 3. Reporting
+#### Export Report
+**Endpoint**: `POST /v1/reports/export`
+- **Body**: `{ "format": "PDF", "type": "WEEKLY_SUMMARY" }`
+- **Response**: Download URL.
 
-#### Submit Feedback
-Crucial for Active Learning. Marks an anomaly as True Positive or False Positive.
-- **Endpoint**: `POST /v1/anomalies/:id/feedback`
-- **Body**:
-  ```json
-  {
-    "verdict": "FALSE_POSITIVE",
-    "reason": "Holiday shopping pattern"
-  }
-  ```
-- **Effect**: Updates the database and tags the record for the next retraining batch.
-
-### 3. Dashboard Statistics
-
-#### Get Summary Metrics
-Returns high-level cards for the dashboard.
-- **Endpoint**: `GET /v1/stats/summary`
-- **Query**: `?range=7d`
-
-**Response**:
-```json
-{
-  "total_transactions": 150000,
-  "total_anomalies": 120,
-  "anomaly_rate": 0.08,
-  "false_positive_rate": 0.01,
-  "saved_amount": 450000.00
-}
-```
-
-#### Get Time-Series Data
-Data for line charts (Transactions vs. Anomalies).
-- **Endpoint**: `GET /v1/stats/timeseries`
-- **Response**: `[{ "date": "2025-01-01", "tx_count": 500, "anomaly_count": 2 }, ...]`
-
-### 4. Alert Configuration
-
-#### List Alert Channels
-- **Endpoint**: `GET /v1/alerts/channels`
-
-#### Configure Alert Channel
-Set up where notifications should go.
-- **Endpoint**: `POST /v1/alerts/channels`
-- **Body**:
-  ```json
-  {
-    "type": "WEBHOOK",
-    "config": { "url": "https://slack.com/webhook/..." },
-    "min_severity": "HIGH"
-  }
-  ```
-
-#### Test Alert
-Sends a dummy alert to verify configuration.
-- **Endpoint**: `POST /v1/alerts/test`
-
-### 5. Reports
-
-#### Export Data
-Download CSV/PDF reports.
-- **Endpoint**: `POST /v1/reports/export`
-- **Body**: `{ "format": "csv", "filters": {...} }`
-
-## Data Retention Policy
-- **Free Plan**: 7 days
-- **Pro Plan**: 90 days
-- **Advanced**: 1 year (Cold storage in S3/R2)
+## 📊 Data Aggregation Strategy
+- **Real-time**: Queries `anomalies` table directly for recent data.
+- **Historical**: Uses materialized views (refreshed hourly) for long-range stats (e.g., "Last 6 Months") to avoid slow queries on millions of rows.
