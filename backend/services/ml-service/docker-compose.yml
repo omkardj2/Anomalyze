@@ -1,0 +1,83 @@
+# =========================================
+# Anomalyze ML Service - Docker Compose
+# Local Development Environment
+# =========================================
+# Usage: docker compose up -d
+
+services:
+  # ML Service Application
+  ml-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./src:/app/src
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      - redpanda
+      - redis
+    restart: unless-stopped
+
+  # Redpanda - Kafka-compatible message broker (lighter than Kafka)
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.1
+    container_name: anomalyze-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"      # Kafka API (external)
+      - "29092:29092"    # Kafka API (internal)
+      - "8081:8081"      # Schema Registry
+      - "8082:8082"      # REST Proxy
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redpanda Console - UI for managing topics
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.4.0
+    container_name: anomalyze-redpanda-console
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_BROKERS=redpanda:29092
+    depends_on:
+      - redpanda
+
+  # Redis - For feature engineering & caching
+  redis:
+    image: redis:7-alpine
+    container_name: anomalyze-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redpanda-data:
+  redis-data:

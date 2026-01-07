@@ -1,0 +1,4 @@
+# Keep data directory for local development
+*.csv
+*.parquet
+!.gitkeep

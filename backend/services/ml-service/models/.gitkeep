@@ -1,0 +1,3 @@
+# Keep models directory in git
+*.pkl
+!.gitkeep

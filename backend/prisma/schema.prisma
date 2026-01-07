@@ -379,3 +379,52 @@ model AuditLog {
 
   @@map("audit_logs")
 }
+
+// --------------------------------------
+// ML Service - User Behavioral Profiles
+// --------------------------------------
+
+model UserBehaviorProfile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  
+  // Spending Statistics
+  avgAmount     Float    @default(50.0)
+  stdAmount     Float    @default(30.0)
+  minAmount     Float    @default(0.0)
+  maxAmount     Float    @default(0.0)
+  medianAmount  Float    @default(0.0)
+  p95Amount     Float    @default(0.0)  // 95th percentile
+  
+  // Time Patterns (stored as JSON arrays)
+  hourDistribution  Json?  // [0.04, 0.02, ...] 24 values
+  dayDistribution   Json?  // [0.15, 0.15, ...] 7 values
+  peakHours         Int[]  // [9, 10, 11, ...]
+  activeDays        Int[]  // [0, 1, 2, 3, 4]
+  
+  // Velocity Patterns
+  avgDailyCount     Float  @default(1.0)
+  avg10minCount     Float  @default(0.02)
+  avgGapSeconds     Float  @default(86400.0)  // Avg time between txns
+  
+  // Merchant Patterns (stored as JSON)
+  merchantCounts    Json?  // {"Starbucks": 50, "Amazon": 30}
+  uniqueMerchants   Int    @default(0)
+  
+  // Profile Metadata
+  totalTransactions Int      @default(0)
+  isMature          Boolean  @default(false)
+  maturityThreshold Int      @default(20)
+  
+  // Recent amounts for percentile calculation
+  recentAmounts     Json?    // [45.0, 52.0, 63.0, ...]
+  
+  // Timestamps
+  firstTransactionAt DateTime?
+  lastTransactionAt  DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([userId])
+  @@map("user_behavior_profiles")
+}
