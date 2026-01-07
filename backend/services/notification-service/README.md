@@ -1,74 +1,127 @@
 # Notification Service (`notification-service`)
 
 ## 📖 Overview
-The **Notification Service** is a multi-channel alert dispatcher. It handles critical anomaly alerts with a tiered escalation policy.
-- **Basic Users**: Email only (Nodemailer).
-- **Pro Users**: Email + **Voice Call** (Twilio) with Text-to-Speech (TTS).
+The **Notification Service** is a Node.js microservice responsible for delivering real-time alerts to users via multiple channels (Email, SMS, Webhooks) when anomalies are detected.
+
+It consumes the `anomalies` Kafka topic and routes alerts based on user preferences.
 
 ## 🏗 Architecture
-- **Email**: Nodemailer (SMTP / SES / SendGrid).
-- **Voice**: Twilio Programmable Voice API.
-- **Input**: Kafka Topic `alerts`.
-- **Logic**: Severity-based routing & User Plan checks.
+- **Language**: TypeScript (Node.js 20+)
+- **Framework**: Express.js (Management API)
+- **Message Broker**: Kafka (Consumer)
+- **Email**: Nodemailer (SMTP)
+- **SMS**: Twilio
+- **Templates**: Handlebars
+
+### Data Flow
+```
+┌─────────────┐    ┌───────────────────────────────────┐
+│ Kafka Topic │───►│       Notification Service        │
+│ "anomalies" │    └────────────────┬──────────────────┘
+└─────────────┘                     │
+                                    │
+                  ┌─────────────────┼──────────────────┐
+                  │                 │                  │
+           ┌──────▼──────┐   ┌──────▼──────┐    ┌──────▼──────┐
+           │    Email    │   │     SMS     │    │   Webhook   │
+           │    (SMTP)   │   │   (Twilio)  │    │   (POST)    │
+           └─────────────┘   └─────────────┘    └─────────────┘
+```
+
+## 📁 Project Structure
+```
+notification-service/
+├── src/
+│   ├── app.ts            # Express app setup
+│   ├── config.ts         # Environment config
+│   ├── api/              # Management API (preferences)
+│   │   └── routes.ts
+│   ├── kafka/
+│   │   └── consumer.ts   # Anomaly event consumer
+│   ├── services/
+│   │   ├── email.service.ts
+│   │   └── sms.service.ts
+│   └── templates/        # Email/SMS templates
+├── .env.example          # Environment template
+├── Dockerfile
+├── package.json
+└── README.md
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Setup Environment
+```bash
+cd backend/services/notification-service
+cp .env.example .env
+npm install
+```
+
+### 2. Configure Environment
+**CRITICAL**: You must set up the `.env` file.
+```bash
+cp .env.example .env
+```
+Required for emails: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`.
+Required for SMS: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`.
+**If missing, the service will start but LOG errors when trying to send.**
+
+### 3. Run with Docker (Recommended)
+This service is part of the master compose.
+```bash
+cd ../..
+docker compose up -d notification-service
+```
+
+## 🩺 Monitoring & Troubleshooting
+
+### Health Check
+```bash
+curl http://localhost:3001/health
+```
+
+### Common Errors
+1.  **Error**: `ConnectTimeoutError` (Redis)
+    *   **Fix**: Ensure Redis is running. If in Docker, `REDIS_URL` must be `redis://redis:6379`.
+2.  **Error**: `Auth failed` (SMTP)
+    *   **Fix**: Verify your Google App Password or SMTP credentials in `.env`.
+```bash
+# Development mode
+npm run dev
+
+# Production build
+npm run build
+npm start
+```
+
+---
 
 ## 🔌 API Reference
 
-### 1. Configuration
-#### Update Notification Settings
-**Endpoint**: `PATCH /v1/settings`
-- **Body**:
-  ```json
-  {
-    "email_enabled": true,
-    "phone_enabled": true, // Only allowed if Plan = PRO
-    "phone_number": "+919876543210",
-    "min_severity_for_call": "CRITICAL" // HIGH or CRITICAL
-  }
-  ```
+### Health Check
+**GET** `/health`
 
-### 2. Testing
-#### Test Channel
-**Endpoint**: `POST /v1/test`
-- **Body**: `{ "channel": "VOICE" }`
-- **Description**: Triggers a dummy call to verify Twilio integration.
-
-## 📞 Voice Call Logic (Twilio)
-**Workflow for Pro Users:**
-1.  **Anomaly Detected**: Kafka message received `{ "severity": "CRITICAL", "amount": 50000 }`.
-2.  **Check Preferences**: Is `phone_enabled`? Is severity >= `min_severity`?
-3.  **Initiate Call**: Call user via Twilio.
-4.  **TwiML Execution (TTS)**:
-    ```xml
-    <Response>
-      <Say voice="alice">
-        This is an alert from Anomalyze. 
-        We detected a critical anomaly of 50,000 Rupees. 
-        Please check your dashboard immediately.
-      </Say>
-    </Response>
-    ```
-5.  **Fallback**: If call status is `busy` or `no-answer`, log it and send an SMS/Email backup.
-
-## 📧 Email Logic (Nodemailer)
-- **Templates**: Handlebars (`.hbs`) templates for consistent branding.
-- **Transport**: Configurable SMTP (Gmail for dev, SES/SendGrid for prod).
-- **Rate Limiting**: Max 10 emails/hour per user to prevent spamming during anomaly storms.
-
-## 📨 Event Consumer
-**Topic**: `alerts`
-**Payload**:
+### Test Notification
+**POST** `/v1/notifications/test`
 ```json
 {
-  "user_id": "user_123",
-  "anomaly_id": "anom_999",
-  "severity": "CRITICAL",
-  "details": {
-    "amount": 50000,
-    "merchant": "Unknown"
-  }
+  "userId": "user_123",
+  "channel": "EMAIL",
+  "message": "This is a test alert"
 }
 ```
-**Processing**:
-1.  Fetch user profile & plan (Cached).
-2.  If `Plan == PRO` && `Severity == CRITICAL` -> **Trigger Call**.
-3.  Always **Trigger Email**.
+
+---
+
+## 🔧 Environment Variables
+
+See `.env.example` for full list.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker | localhost:9092 |
+| `SMTP_HOST` | Email server host | - |
+| `TWILIO_ACCOUNT_SID` | Twilio ID for SMS | - |
+

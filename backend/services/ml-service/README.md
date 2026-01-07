@@ -74,12 +74,34 @@ cp .env.example .env
 pip install -e .
 ```
 
-### 2. Start Local Services (Kafka + Redis + Postgres)
+### 2. Configure Environment
+**CRITICAL**: You must set up the `.env` file.
 ```bash
-docker compose up -d redpanda redis redpanda-console postgres
+cp .env.example .env
+```
+Ensure `DATABASE_URL` is set.
+**Missing `ANOMALY_THRESHOLD` will default to 0.8, but `DATABASE_URL` is fatal.**
+
+### 3. Run with Docker (Recommended)
+This service is part of the master compose.
+```bash
+cd ../../..
+docker compose up -d ml-service
 ```
 
-### 3. Run the ML Service
+## 🩺 Monitoring & Troubleshooting
+
+### Health Check
+```bash
+curl http://localhost:8000/v1/health
+# Returns: { "status": "ok", "service": "ml-service" }
+```
+
+### Common Errors
+1.  **Error**: `pydantic_core.ValidationError`
+    *   **Fix**: You are missing a required env variable in `.env`. Check the error log for the missing field name.
+2.  **Error**: `PostgresConnectionError`
+    *   **Fix**: Ensure `DATABASE_URL` is correct. Inside Docker, use `postgres:5432`.
 ```bash
 # Development mode with hot reload
 uvicorn src.main:app --reload --port 8000

@@ -1,58 +1,74 @@
-# Analytics & Reporting Service (`analytics-service`)
+# Analytics Service (`analytics-service`)
 
 ## 📖 Overview
-The **Analytics Service** powers the frontend dashboard. It aggregates data from the `anomalies` database and provides actionable insights. It is optimized for **Read Heavy** workloads.
+The **Analytics Service** is the central dashboard API for the Anomalyze platform. It aggregates data from the `transactions` and `anomalies` Kafka topics to provide real-time insights to the frontend.
+
+It serves as the user's primary interface for visualizing:
+1.  **Spending Trends**: Daily/Weekly aggregation of transaction amounts.
+2.  **Anomaly Insights**: Count and severity distribution of detected anomalies.
+3.  **Real-time Feed**: Recent activity stream.
 
 ## 🏗 Architecture
-- **Database**: Postgres (Read Replica preferred).
-- **Cache**: Redis (for pre-computed dashboard stats).
-- **Export Engine**: Generates CSV/PDF reports on the fly.
+- **Language**: TypeScript (Node.js 20+)
+- **Database**: PostgreSQL (Shared) - Stores aggregated stats.
+- **Cache**: Redis - Caches "hot" dashboard data for <100ms load times.
+- **Kafka**: Consumer - Listens to all system events to build views.
+
+### Data Flow
+```
+┌─────────────┐    ┌───────────────────────────────────┐
+│  Dashboard  │◄───│         Analytics Service         │
+│  (React)    │    └─┬──────────────────────┬──────────┘
+└─────────────┘      │                      │
+            ┌────────▼──────┐       ┌───────▼───────┐
+            │   PostgreSQL  │       │  Redis Cache  │
+            │ (Aggregations)│       │ (Live Stats)  │
+            └───────▲───────┘       └───────────────┘
+                    │
+            ┌───────┴───────┐
+            │ Kafka Consumer│◄─── [Transactions, Anomalies]
+            └───────────────┘
+```
+
+## 📁 Project Structure
+```
+analytics-service/
+├── src/
+│   ├── app.ts            # Express app
+│   ├── jobs/             # Aggregation Cron Jobs
+│   ├── services/
+│   │   └── stats.service.ts
+│   └── api/
+│       └── dashboard.routes.ts
+├── .env.example
+├── Dockerfile
+└── README.md
+```
+
+## 🚀 Quick Start (Running with Full Stack)
+
+> **Tip:** Run everything via the master compose in `backend/`:
+> ```bash
+> cd ../..
+> docker compose up -d
+> ```
+
+### Local Dev
+1.  **Configure `.env`**: Copy `.env.example`.
+2.  **Start Service**:
+    ```bash
+    npm install
+    npm run dev
+    ```
 
 ## 🔌 API Reference
 
-### 1. Dashboard Widgets
-#### Summary Stats
-**Endpoint**: `GET /v1/stats/summary`
-- **Query**: `?range=24h`
-- **Response**:
-  ```json
-  {
-    "total_transactions": 50000,
-    "anomalies_detected": 12,
-    "money_saved": 450000,
-    "risk_score": "LOW"
-  }
-  ```
+### Health
+**GET** `/health`
 
-#### Time Series (Charts)
-**Endpoint**: `GET /v1/stats/timeline`
-- **Response**: Data points for "Transactions vs Anomalies" line chart.
+### Dashboard Stats
+**GET** `/v1/stats/overview?range=7d`
+- Returns total spend, anomaly count, and risk score.
 
-#### Category Breakdown (Pie Chart)
-**Endpoint**: `GET /v1/stats/categories`
-- **Response**: `{ "Electronics": 40, "Travel": 30, "Food": 30 }`
-
-### 2. Anomaly Management
-#### List Anomalies
-**Endpoint**: `GET /v1/anomalies`
-- **Filters**: `severity`, `status` (OPEN, RESOLVED), `date_range`.
-- **Pagination**: Cursor-based pagination for performance.
-
-#### Get Anomaly Details
-**Endpoint**: `GET /v1/anomalies/:id`
-- **Includes**: Full explanation, rule triggered, and raw transaction data.
-
-#### Resolve Anomaly
-**Endpoint**: `PATCH /v1/anomalies/:id`
-- **Body**: `{ "status": "RESOLVED", "feedback": "FALSE_POSITIVE" }`
-- **Note**: Feedback is pushed to a queue for the ML Service to improve future training.
-
-### 3. Reporting
-#### Export Report
-**Endpoint**: `POST /v1/reports/export`
-- **Body**: `{ "format": "PDF", "type": "WEEKLY_SUMMARY" }`
-- **Response**: Download URL.
-
-## 📊 Data Aggregation Strategy
-- **Real-time**: Queries `anomalies` table directly for recent data.
-- **Historical**: Uses materialized views (refreshed hourly) for long-range stats (e.g., "Last 6 Months") to avoid slow queries on millions of rows.
+**GET** `/v1/stats/anomalies`
+- Returns recent anomalies with explanations.
