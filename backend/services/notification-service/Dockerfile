@@ -11,6 +11,7 @@ RUN npm ci
 
 # Copy source code
 COPY tsconfig.json ./
+COPY prisma ./prisma
 COPY src ./src
 
 # Build TypeScript
@@ -34,6 +35,10 @@ RUN npm ci --only=production
 
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
+
+# Generate Prisma Client for production
+RUN npx prisma generate
 
 # Switch to non-root user
 USER appuser

@@ -1,0 +1,456 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --------------------------------------
+// Enums
+// --------------------------------------
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum SubscriptionPlan {
+  FREE
+  BASIC
+  PRO
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  HALTED // Razorpay specific: Subscription is paused/halted
+  TRIALING
+}
+
+enum TransactionSource {
+  REALTIME_API
+  BATCH_CSV
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum NotificationChannelType {
+  EMAIL
+  VOICE
+  SMS
+  WEBHOOK
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED // e.g. User preference disabled this channel
+}
+
+enum InvoiceStatus {
+  PENDING
+  GENERATED
+  FAILED
+}
+
+enum ReportStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// --------------------------------------
+// Identity & Access Management (Auth Service)
+// --------------------------------------
+
+model User {
+  // ID comes from Clerk (e.g., "user_2q3X...")
+  id        String   @id
+  email     String   @unique
+  name      String?
+  role      UserRole @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  subscription         Subscription?
+  apiKeys              ApiKey[]
+  notificationSettings NotificationSettings?
+
+  // Data Relations
+  transactions Transaction[]
+  anomalies    Anomaly[]
+  batchJobs    BatchJob[]
+
+  // Logs & History
+  notificationLogs NotificationLog[]
+  paymentLogs      PaymentLog[]
+  auditLogs        AuditLog[]
+  invoices         Invoice[]
+  reports          Report[]
+
+  @@map("users")
+}
+
+model ApiKey {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name      String // e.g. "Production Server 1"
+  keyPrefix String // First 7 chars (e.g. "sk_live")
+  keyHash   String // Bcrypt hash of the full key
+  scopes    String[] // ["ingest:write", "alerts:read"]
+
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  isRevoked  Boolean   @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([keyPrefix])
+  @@map("api_keys")
+}
+
+// --------------------------------------
+// Billing & Entitlements (Subscription Service)
+// --------------------------------------
+
+model Subscription {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Plan Details
+  plan   SubscriptionPlan   @default(FREE)
+  status SubscriptionStatus @default(ACTIVE)
+
+  // Razorpay Specifics
+  razorpayCustomerId     String?
+  razorpaySubscriptionId String? @unique
+
+  // Period Tracking
+  currentPeriodStart DateTime @default(now())
+  currentPeriodEnd   DateTime
+
+  // Entitlements Snapshot (JSON)
+  // Example: { "realtime": true, "alerting": true, "retention_days": 90, "api_rate_limit": 1000 }
+  features Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoices Invoice[]
+
+  @@map("subscriptions")
+}
+
+model Invoice {
+  id             String       @id @default(uuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id])
+
+  amount   Decimal       @db.Decimal(10, 2)
+  currency String        @default("INR")
+  status   InvoiceStatus @default(PENDING)
+
+  // S3/R2 URL for the generated PDF
+  pdfUrl String?
+
+  billingPeriodStart DateTime
+  billingPeriodEnd   DateTime
+
+  createdAt DateTime @default(now())
+
+  @@map("invoices")
+}
+
+model PaymentLog {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  // Razorpay Transaction Details
+  razorpayPaymentId String  @unique
+  razorpayOrderId   String?
+  razorpaySignature String?
+
+  amount   Decimal @db.Decimal(10, 2)
+  currency String  @default("INR")
+  status   String // captured, failed, refunded
+  method   String? // card, upi, netbanking
+
+  createdAt DateTime @default(now())
+
+  @@map("payment_logs")
+}
+
+// --------------------------------------
+// Notifications (Notification Service)
+// --------------------------------------
+
+model NotificationSettings {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  emailEnabled Boolean @default(true)
+
+  // Pro Feature: Voice Calls
+  phoneEnabled       Boolean  @default(false)
+  phoneNumber        String?
+  minSeverityForCall Severity @default(CRITICAL) // Only call for CRITICAL by default
+
+  // Webhook Support
+  webhookUrl    String?
+  webhookSecret String?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("notification_settings")
+}
+
+model NotificationLog {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  channel NotificationChannelType
+  status  NotificationStatus
+
+  // Context
+  anomalyId String? // Optional link to anomaly
+  metadata  Json? // { "error": "Twilio busy", "retry_count": 2 }
+
+  sentAt DateTime @default(now())
+
+  @@map("notification_logs")
+}
+
+// --------------------------------------
+// Core Data: Transactions (Ingestion Service)
+// --------------------------------------
+
+model Transaction {
+  id String @id @default(uuid()) // Internal UUID
+
+  // External Transaction ID (from the source system)
+  txId String
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Financial Data
+  amount   Decimal @db.Decimal(15, 2)
+  currency String  @default("USD")
+
+  // Metadata
+  timestamp DateTime // When the transaction actually happened
+  location  String?
+  merchant  String?
+  category  String?
+
+  // Ingestion Metadata
+  source     TransactionSource
+  ingestedAt DateTime          @default(now())
+
+  // Relations
+  anomalies Anomaly[]
+
+  @@unique([txId, userId])
+  // Indexes for faster lookups and time-series queries
+  @@index([userId, timestamp])
+  @@index([txId])
+  @@map("transactions")
+}
+
+model BatchJob {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  filename      String
+  r2Key         String // Cloudflare R2 Object Key
+  status        String // PENDING, PROCESSING, COMPLETED, FAILED
+  totalRows     Int    @default(0)
+  processedRows Int    @default(0)
+  failedRows    Int    @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  errors BatchError[]
+
+  @@map("batch_jobs")
+}
+
+model BatchError {
+  id    String   @id @default(uuid())
+  jobId String
+  job   BatchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  rowNumber Int
+  error     String
+  rawData   String?
+
+  createdAt DateTime @default(now())
+
+  @@map("batch_errors")
+}
+
+// --------------------------------------
+// Detection Engine (ML Service)
+// --------------------------------------
+
+model Anomaly {
+  id String @id @default(uuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  modelVersion String? // Added for audit: Which model flagged this?
+
+  // Detection Results
+  severity Severity
+  score    Float // ML Probability Score (0.0 - 1.0)
+
+  // Analysis Details
+  ruleViolations String[] // Array of triggered rules e.g. ["VELOCITY_HIGH", "GEO_IMPOSSIBLE"]
+  explanation    String   @db.Text // Human-readable explanation
+
+  // Full JSON dump of the analysis for debugging/retraining
+  rawAnalysis Json?
+
+  detectedAt DateTime @default(now())
+
+  // Feedback Loop (Active Learning)
+  isFalsePositive Boolean   @default(false)
+  feedbackNotes   String?
+  feedbackAt      DateTime?
+
+  @@index([userId, detectedAt])
+  @@index([severity])
+  @@map("anomalies")
+}
+
+model ModelArtifact {
+  id      String @id @default(uuid())
+  version String @unique // e.g. "v1.2.0"
+
+  s3Path String // Path to .pkl or .onnx in Data Lake
+  type   String // "isolation_forest", "autoencoder"
+
+  accuracy        Float?
+  metrics         Json? // Detailed metrics (precision, recall, etc.)
+  hyperparameters Json? // Config used for training
+  isActive        Boolean @default(false)
+
+  trainedAt DateTime @default(now())
+
+  @@map("model_artifacts")
+}
+
+// --------------------------------------
+// Analytics & Reporting (Analytics Service)
+// --------------------------------------
+
+model Report {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  type   String // "WEEKLY_SUMMARY", "ANOMALY_EXPORT"
+  format String // "PDF", "CSV"
+  status ReportStatus @default(PROCESSING)
+
+  fileUrl String? // S3/R2 URL
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@map("reports")
+}
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  action    String // LOGIN, API_KEY_CREATED, PLAN_UPDATED
+  details   Json? // Contextual data
+  ipAddress String?
+  userAgent String?
+
+  timestamp DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+// --------------------------------------
+// ML Service - User Behavioral Profiles
+// --------------------------------------
+
+model UserBehaviorProfile {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  // Spending Statistics
+  avgAmount    Float @default(50.0)
+  stdAmount    Float @default(30.0)
+  minAmount    Float @default(0.0)
+  maxAmount    Float @default(0.0)
+  medianAmount Float @default(0.0)
+  p95Amount    Float @default(0.0) // 95th percentile
+
+  // Time Patterns (stored as JSON arrays)
+  hourDistribution Json? // [0.04, 0.02, ...] 24 values
+  dayDistribution  Json? // [0.15, 0.15, ...] 7 values
+  peakHours        Int[] // [9, 10, 11, ...]
+  activeDays       Int[] // [0, 1, 2, 3, 4]
+
+  // Velocity Patterns
+  avgDailyCount Float @default(1.0)
+  avg10minCount Float @default(0.02)
+  avgGapSeconds Float @default(86400.0) // Avg time between txns
+
+  // Merchant Patterns (stored as JSON)
+  merchantCounts  Json? // {"Starbucks": 50, "Amazon": 30}
+  uniqueMerchants Int   @default(0)
+
+  // Profile Metadata
+  totalTransactions Int     @default(0)
+  isMature          Boolean @default(false)
+  maturityThreshold Int     @default(20)
+
+  // Recent amounts for percentile calculation
+  recentAmounts Json? // [45.0, 52.0, 63.0, ...]
+
+  // Timestamps
+  firstTransactionAt DateTime?
+  lastTransactionAt  DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("user_behavior_profiles")
+}
