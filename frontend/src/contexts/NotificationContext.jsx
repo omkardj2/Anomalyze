@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 
 const NotificationContext = createContext(undefined);
@@ -6,6 +6,11 @@ const NotificationContext = createContext(undefined);
 export function NotificationProvider({ children }) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+
+  const addNotification = useCallback((notification) => {
+    setNotifications((prev) => [notification, ...prev]);
+    setUnreadCount((prev) => prev + 1);
+  }, []);
 
   // Simulate receiving real-time notifications
   useEffect(() => {
@@ -31,12 +36,9 @@ export function NotificationProvider({ children }) {
     }, 10000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [addNotification]);
 
-  const addNotification = (notification) => {
-    setNotifications((prev) => [notification, ...prev]);
-    setUnreadCount((prev) => prev + 1);
-  };
+
 
   const markAllAsRead = () => {
     setNotifications((prev) => prev.map(n => ({ ...n, read: true })));
@@ -50,6 +52,7 @@ export function NotificationProvider({ children }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useNotifications() {
   const context = useContext(NotificationContext);
   if (context === undefined) {

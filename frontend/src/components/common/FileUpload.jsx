@@ -8,7 +8,7 @@ export function FileUpload() {
   const [isDragging, setIsDragging] = useState(false);
   const [file, setFile] = useState(null);
   const [progress, setProgress] = useState(0);
-  const [isUploading, setIsUploading] = useState(false);
+
   const fileInputRef = useRef(null);
 
   const handleDrag = (e) => {
@@ -46,13 +46,14 @@ export function FileUpload() {
     // formData.append('file', file);
     // await api.post('/upload', formData);
 
-    setIsUploading(true);
+    // await api.post('/upload', formData);
+
     setProgress(0);
     const interval = setInterval(() => {
       setProgress((prev) => {
         if (prev >= 100) {
           clearInterval(interval);
-          setIsUploading(false);
+          clearInterval(interval);
           toast.success('File uploaded successfully', { description: 'Processing has started.' });
           return 100;
         }
@@ -64,7 +65,8 @@ export function FileUpload() {
   const removeFile = () => {
     setFile(null);
     setProgress(0);
-    setIsUploading(false);
+    setFile(null);
+    setProgress(0);
   };
 
   return (

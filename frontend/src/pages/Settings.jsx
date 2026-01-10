@@ -2,7 +2,7 @@ import { Header } from '../components/layout/Header';
 import { motion } from 'framer-motion';
 import { Check, X, CreditCard, Shield } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { useState } from 'react';
+// import { useState } from 'react';
 
 // TODO: Fetch available plans from backend (GET /subscriptions/plans)
 const plans = [
@@ -43,7 +43,7 @@ const plans = [
 ];
 
 export default function Settings() {
-  const [billingCycle, setBillingCycle] = useState('monthly');
+  // const [billingCycle, setBillingCycle] = useState('monthly');
 
   return (
     <div>

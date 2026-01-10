@@ -1,6 +1,6 @@
 import { Bell, Search, X } from 'lucide-react';
 import { useNotifications } from '../../contexts/NotificationContext';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../../lib/utils';
 import { useSearchParams } from 'react-router-dom';
