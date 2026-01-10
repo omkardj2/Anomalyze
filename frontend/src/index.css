@@ -1,69 +1,56 @@
 @import "tailwindcss";
+
+@theme {
+  --color-background: #0B0C15;
+  /* Deep dark blue/black */
+  --color-foreground: #FFFFFF;
+
+  --color-primary: #6366f1;
+  /* Indigo 500 */
+  --color-primary-foreground: #FFFFFF;
+
+  --color-secondary: #0ea5e9;
+  /* Sky 500 */
+  --color-secondary-foreground: #FFFFFF;
+
+  --color-accent: #22d3ee;
+  /* Cyan 400 (Neon feel) */
+  --color-accent-foreground: #000000;
+
+  --color-muted: #1e293b;
+  --color-muted-foreground: #94a3b8;
+
+  --color-border: #1e293b;
+  --color-input: #1e293b;
+  --color-ring: #6366f1;
+}
+
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  color-scheme: dark;
+}
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
-
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
-
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
+@layer utilities {
+  .glass {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10 shadow-xl;
   }
-  a:hover {
-    color: #747bff;
+
+  .glass-card {
+    @apply bg-[#141522]/80 backdrop-blur-xl border border-white/5 shadow-2xl rounded-2xl;
   }
-  button {
-    background-color: #f9f9f9;
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 via-purple-400 to-cyan-400;
+  }
+
+  .glass-panel {
+    @apply bg-[#1A1D2D]/60 backdrop-blur-md border border-white/[0.08] shadow-sm;
   }
 }
