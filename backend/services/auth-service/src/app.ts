@@ -4,6 +4,10 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
+import { connectDB } from './config/db';
+import { handleClerkWebhook } from './webhooks/user.sync';
+import { requireAuth } from './middleware/auth.middleware';
+import { getMe } from './controllers/user.controller';
 
 // 1. Load Environment Variables
 dotenv.config();
@@ -12,9 +16,9 @@ dotenv.config();
 const envSchema = z.object({
     PORT: z.string().default('3002'),
     SERVICE_NAME: z.string().default('auth-service'),
-    CLERK_PUBLISHABLE_KEY: z.string().min(1, "CLERK_PUBLISHABLE_KEY is required"),
-    CLERK_SECRET_KEY: z.string().min(1, "CLERK_SECRET_KEY is required"),
-    DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+    // CLERK_PUBLISHABLE_KEY: z.string().min(1, "CLERK_PUBLISHABLE_KEY is required"),
+    // CLERK_SECRET_KEY: z.string().min(1, "CLERK_SECRET_KEY is required"),
+    // DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 });
 
 try {
@@ -43,6 +47,13 @@ const swaggerOptions = {
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
+// Routes
+// Webhook for Clerk (Public)
+app.post('/webhooks/clerk', handleClerkWebhook);
+
+// Protected Routes
+app.get('/v1/me', requireAuth, getMe);
+
 // Health Check
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: process.env.SERVICE_NAME });
@@ -50,8 +61,10 @@ app.get('/health', (req, res) => {
 
 // Start Server (Conditional)
 if (require.main === module) {
-    app.listen(PORT, () => {
-        console.log(`✅ ${process.env.SERVICE_NAME} running on port ${PORT}`);
+    connectDB().then(() => {
+        app.listen(PORT, () => {
+            console.log(`✅ ${process.env.SERVICE_NAME} running on port ${PORT}`);
+        });
     });
 }
 

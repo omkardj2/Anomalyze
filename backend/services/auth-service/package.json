@@ -6,7 +6,8 @@
     "scripts": {
         "start": "node dist/app.js",
         "dev": "ts-node-dev --respawn --transpile-only src/app.ts",
-        "build": "tsc -p tsconfig.build.json"
+        "build": "tsc -p tsconfig.build.json",
+        "test": "jest"
     },
     "dependencies": {
         "@clerk/clerk-sdk-node": "^4.12.21",

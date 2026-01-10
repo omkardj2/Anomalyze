@@ -49,13 +49,41 @@ auth-service/
 > docker compose up -d
 > ```
 
-### Local Dev
-1.  **Configure `.env`**: Copy `.env.example` and add your **Clerk Keys**.
-2.  **Start Service**:
+### Local Dev Setup
+
+1.  **Start Database:**
+    Ensure Postgres is running via Docker:
+    ```bash
+    cd backend
+    docker compose up -d postgres
+    ```
+
+2.  **Configure `.env`**:
+    Copy `.env.example` to `.env` and add your **Clerk Keys** and **Database URL**:
+    ```bash
+    DATABASE_URL="postgresql://user:password@localhost:5432/anomalyze"
+    ```
+
+3.  **Start Service**:
     ```bash
     npm install
     npm run dev
     ```
+
+## 🪝 Webhook Setup (User Sync)
+
+To test user synchronization locally:
+
+1.  Start the service (`npm run dev`).
+2.  Start a temporary tunnel (in a new terminal):
+    ```bash
+    npx localtunnel --port 3002
+    ```
+3.  Add the URL to Clerk Dashboard > Webhooks > Add Endpoint:
+    *   URL: `https://<your-tunnel-url>/webhooks/clerk`
+    *   Events: `user.created`, `user.updated`, `user.deleted`
+4.  Copy the **Signing Secret** to your `.env` as `CLERK_WEBHOOK_SECRET`.
+5.  Restart the service.
 
 ## 🔌 API Reference
 
@@ -67,3 +95,4 @@ auth-service/
 
 ### User Management
 **GET** `/v1/me` - Get current user profile (synced from DB).
+
