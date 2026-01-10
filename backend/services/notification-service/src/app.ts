@@ -1,15 +1,15 @@
+// 1. Load Environment Variables FIRST (before any other imports that use env vars)
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import { z } from 'zod';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
 
 import routes from './api/routes';
 import { startKafkaConsumer } from './kafka/consumer';
-
-// 1. Load Environment Variables
-dotenv.config();
 
 // 2. Validate Environment Variables
 const envSchema = z.object({
